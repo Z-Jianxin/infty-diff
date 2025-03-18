@@ -4,7 +4,8 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
 import numpy as np
-from flash_attn.flash_attention import FlashAttention
+#from flash_attn.flash_attention import FlashAttention
+from flash_attn import flash_attn_qkvpacked_func
 
 class UNO(nn.Module):
     def __init__(self, nin, nout, width=64, mults=(1,2,4,8), blocks_per_level=(2,2,2,2), time_emb_dim=None, 
@@ -230,7 +231,7 @@ class FlashAttnBlock(nn.Module):
         self.norm = nn.LayerNorm(dim)
         self.qkv = nn.Linear(dim, num_heads*dim_head*3)
         self.attn_linear = nn.Linear(num_heads*dim_head, dim)
-        self.attn = FlashAttention()
+        self.attn = flash_attn_qkvpacked_func #FlashAttention()
 
     def forward(self, x, t=None, z=None):
         height = x.size(2)
@@ -240,7 +241,7 @@ class FlashAttnBlock(nn.Module):
         qkv = rearrange(qkv, "b l (three h c) -> b l three h c", three=3, h=self.num_heads)
 
         # Do Flash Attention
-        h, _ = self.attn(qkv)
+        h = self.attn(qkv)
 
         h = rearrange(h, "b l h c -> b l (h c)")
         h = self.attn_linear(h)
