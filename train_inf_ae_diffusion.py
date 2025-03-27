@@ -13,7 +13,7 @@ from models import SparseUNet, SparseEncoder
 from utils import get_data_loader, flatten_collection, optim_warmup, \
     plot_images, update_ema, create_named_schedule_sampler, LossAwareSampler
 import diffusion as gd
-from diffusion import GaussianDiffusion, get_named_beta_schedule
+from diffusion import GaussianDiffusion, get_named_beta_schedule, RectifiedFlow
 
 # Commandline arguments
 FLAGS = flags.FLAGS
@@ -27,7 +27,7 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = False
 device = torch.device('cuda')
 
-def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule_sampler, vis=None, checkpoint_path='', global_step=0):
+def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, schedule_sampler, vis=None, checkpoint_path='', global_step=0):
     halton = Halton(2)
     scaler = torch.cuda.amp.GradScaler()
 
@@ -44,11 +44,10 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
             if global_step < H.optimizer.warmup_steps:
                 optim_warmup(global_step, optim, H.optimizer.learning_rate, H.optimizer.warmup_steps)
 
-            global_step += 1
             x = x.to(device, non_blocking=True)
             x = x * 2 - 1 
 
-            t, weights = schedule_sampler.sample(x.size(0), device)
+            # t, weights = schedule_sampler.sample(x.size(0), device)
 
             if H.mc_integral.type == 'uniform':
                 sample_lst = torch.stack([torch.from_numpy(np.random.choice(H.data.img_size**2, H.mc_integral.q_sample, replace=False)) for _ in range(H.train.batch_size)]).to(device)
@@ -59,12 +58,14 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
                 raise Exception('Unknown Monte Carlo Integral type')
 
             with torch.cuda.amp.autocast(enabled=H.train.amp):
-                losses = diffusion.training_losses(model, x, t, sample_lst=sample_lst, encoder=encoder)
-
-                if H.diffusion.multiscale_loss:
-                    loss = (losses["multiscale_loss"] * weights).mean()
+                losses = diffusion.training_losses(model, x, sample_lst=sample_lst, encoder=encoder)
+                if H.diffusion.weighted_loss:
+                    if H.diffusion.multiscale_loss:
+                        loss = (losses["multiscale_loss"] * weights).mean()
+                    else:
+                        loss = (losses["loss"] * weights).mean()
                 else:
-                    loss = (losses["loss"] * weights).mean()
+                    loss = losses["loss"].mean()
             
             optim.zero_grad()
             if H.train.amp:
@@ -97,7 +98,7 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
             mean_total_norm += max(model_total_norm, encoder_total_norm).item()
 
             wandb_dict = dict()
-            if global_step % H.train.plot_graph_steps == 0 and global_step > 0:
+            if global_step % H.train.plot_graph_steps == 0: # and global_step > 0:
                 norm = H.train.plot_graph_steps
                 print(f"Step: {global_step}, Loss {mean_loss / norm:.5f}, Step Time: {mean_step_time / norm:.5f}, Skip: {skip / norm:.5f}, Gradient Norm: {mean_total_norm / norm:.5f}")
                 wandb_dict |= {'Step Time': mean_step_time / norm, 'Loss': mean_loss / norm, 'Skip': skip / norm, "Gradient Norm": mean_total_norm / norm}
@@ -106,7 +107,7 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
                 skip = 0
                 mean_total_norm = 0
             
-            if global_step % H.train.plot_samples_steps == 0 and global_step > 0:
+            if global_step % H.train.plot_samples_steps == 0: # and global_step > 0:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast(enabled=H.train.amp):
                         if H.model.stochastic_encoding:
@@ -123,7 +124,7 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
             if wandb_dict:
                 wandb.log(wandb_dict, step=global_step)
 
-            if global_step % H.train.checkpoint_steps == 0 and global_step > 0:
+            if global_step % H.train.checkpoint_steps == 0: # and global_step > 0:
                 torch.save({
                         'global_step': global_step,
                         'model_state_dict': model.state_dict(),
@@ -131,14 +132,24 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
                         'model_ema_state_dict': ema_model.state_dict(),
                         'optimizer_state_dict': optim.state_dict(),
                     }, checkpoint_path)
+                wandb_model_artifact_name = str(global_step) + "_" + run.id
+                wandb_model = wandb.Artifact(wandb_model_artifact_name, type="model")
+                wandb_model.add_file(checkpoint_path)
+                run.log_artifact(wandb_model)
+            
+            if H.run.dry_run:
+                return
+            global_step += 1
                 
 
 def main(argv):
     H = FLAGS.config
+    os.environ['WANDB_CACHE_DIR'] = f'{H.run.wandb_dir}/wandb-cache'
+    os.makedirs(os.environ['WANDB_CACHE_DIR'], exist_ok=True)
     train_kwargs = {}
 
     # wandb can be disabled by passing in --config.run.wandb_mode=disabled
-    wandb.init(project=H.run.name, config=flatten_collection(H), save_code=True, dir=H.run.wandb_dir, mode=H.run.wandb_mode)
+    run = wandb.init(project=H.run.name, config=flatten_collection(H), save_code=True, dir=H.run.wandb_dir, mode=H.run.wandb_mode)
     
     model = SparseUNet(
         channels=H.data.channels,
@@ -249,7 +260,7 @@ def main(argv):
         raise Exception("Unknown model mean type. Expected value in [epsilon, v, xstart]")
     model_var_type=((gd.ModelVarType.FIXED_LARGE if not H.model.sigma_small else gd.ModelVarType.FIXED_SMALL) if not H.model.learn_sigma else gd.ModelVarType.LEARNED_RANGE)
     loss_type = gd.LossType.MSE if H.diffusion.loss_type == 'mse' else gd.LossType.RESCALED_MSE
-    diffusion = GaussianDiffusion(
+    diffusion = RectifiedFlow(
             betas, 
             model_mean_type, 
             model_var_type, 
@@ -265,7 +276,7 @@ def main(argv):
 
     schedule_sampler = create_named_schedule_sampler(H.diffusion.schedule_sampler, diffusion)
 
-    train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule_sampler, **train_kwargs)
+    train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, schedule_sampler, **train_kwargs)
 
 if __name__ == '__main__':
     app.run(main)

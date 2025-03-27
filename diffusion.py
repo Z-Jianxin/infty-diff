@@ -1050,7 +1050,6 @@ class GaussianDiffusion(nn.Module):
             noise = torch.randn_like(x_start)
         img_size = x_start.size(-1)
         x_t = self.q_sample(x_start, t, noise=noise)
-        
         mollified_noise = None
         if self.model_mean_type == ModelMeanType.MOLLIFIED_EPSILON:
             mollified_noise = self.mollifier(noise)
@@ -1412,3 +1411,287 @@ def space_timesteps(num_timesteps, section_counts):
         all_steps += taken_steps
         start_idx += size
     return set(all_steps)
+
+class RectifiedFlow(nn.Module):
+
+    def __init__(
+        self,
+        betas,
+        model_mean_type,
+        model_var_type,
+        loss_type,
+        gaussian_filter_std=0.0,
+        img_size=None,
+        rescale_timesteps=False,
+        multiscale_loss=False,
+        multiscale_max_img_size=128,
+        mollifier_type="conv",
+        stochastic_encoding = False
+    ):
+        super().__init__()
+        self.model_mean_type = model_mean_type
+        self.model_var_type = model_var_type
+        self.loss_type = loss_type
+        self.rescale_timesteps = rescale_timesteps
+        self.multiscale_loss = multiscale_loss
+        self.multiscale_max_img_size = multiscale_max_img_size
+        self.stochastic_encoding = stochastic_encoding
+        self.num_timesteps = 1000
+
+        if gaussian_filter_std == 0.0:
+            self.mollifier = nn.Identity()
+        else:
+            if mollifier_type == "conv":
+                ksize = math.ceil(gaussian_filter_std * 4 + 1)
+                ksize = ksize + 1 if ksize % 2 == 0 else ksize
+                self.mollifier = get_conv((ksize, ksize), (gaussian_filter_std, gaussian_filter_std))
+            elif mollifier_type == "dct":
+                self.mollifier = DCTGaussianBlur(img_size, gaussian_filter_std)
+
+    def p_sample(
+        self,
+        model,
+        x,
+        t,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        noise_mul=1.0
+    ):
+        """
+        Sample x_{t-1} from the model at the given timestep.
+
+        :param model: the model to sample from.
+        :param x: the current tensor at x_{t-1}.
+        :param t: the value of t, starting at 0 for the first diffusion step.
+        :param clip_denoised: if True, clip the x_start prediction to [-1, 1].
+        :param denoised_fn: if not None, a function which applies to the
+            x_start prediction before it is used to sample.
+        :param cond_fn: if not None, this is a gradient function that acts
+                        similarly to the model.
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :return: a dict containing the following keys:
+                 - 'sample': a random sample from the model.
+                 - 'pred_xstart': a prediction of x_0.
+        """
+        out = self.p_mean_variance(
+            model,
+            x,
+            t,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs,
+        )
+        noise = torch.randn_like(x) * noise_mul
+        nonzero_mask = (
+            (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
+        )  # no noise when t == 0
+        if cond_fn is not None:
+            out["mean"] = self.condition_mean(
+                cond_fn, out, x, t, model_kwargs=model_kwargs
+            )
+        
+        if self.model_mean_type == ModelMeanType.MOLLIFIED_EPSILON:
+            # In this case because we predict T\epsilon then rather than calculating x_0 we only mollify the noise 
+            sample = out["mean"] + nonzero_mask * torch.exp(0.5 * out["log_variance"]) * self.mollifier(noise)
+        else:
+            # Otherwise we predict x_0 so need to mollify it.
+            sample = self.mollifier(out["posterior_x_start_component"] + nonzero_mask * torch.exp(0.5 * out["log_variance"]) * noise)
+            sample = sample + out["posterior_x_t_component"]
+
+        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+
+    def p_sample_loop(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+        return_all=False,
+        noise_mul=1.0
+    ):
+        """
+        Generate samples from the model.
+
+        :param model: the model module.
+        :param shape: the shape of the samples, (N, C, H, W).
+        :param noise: if specified, the noise from the encoder to sample.
+                      Should be of the same shape as `shape`.
+        :param clip_denoised: if True, clip x_start predictions to [-1, 1].
+        :param denoised_fn: if not None, a function which applies to the
+            x_start prediction before it is used to sample.
+        :param cond_fn: if not None, this is a gradient function that acts
+                        similarly to the model.
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :param device: if specified, the device to create the samples on.
+                       If not specified, use a model parameter's device.
+        :param progress: if True, show a tqdm progress bar.
+        :return: a non-differentiable batch of samples.
+        """
+        final = None
+        all_samples = []
+        all_pred_xstarts = []
+        for sample in self.p_sample_loop_progressive(
+            model,
+            shape,
+            noise=noise,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            cond_fn=cond_fn,
+            model_kwargs=model_kwargs,
+            device=device,
+            progress=progress,
+            noise_mul=noise_mul
+        ):
+            final = sample
+            if return_all:
+                all_samples.append(sample["sample"][0].float().cpu())
+                all_pred_xstarts.append(sample["pred_xstart"][0].float().cpu())
+        if return_all:
+            return final["sample"], torch.stack(all_samples), torch.stack(all_pred_xstarts), final["pred_xstart"]
+        else:
+            return final["sample"], final["pred_xstart"]
+        
+    def p_sample_loop_progressive(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+        noise_mul=1.0
+    ):
+        """
+        Generate samples from the model and yield intermediate samples from
+        each timestep of diffusion.
+
+        Arguments are the same as p_sample_loop().
+        Returns a generator over dicts, where each dict is the return value of
+        p_sample().
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = torch.randn(*shape, device=device)
+            img = self.mollifier(img * noise_mul)
+        indices = list(range(self.num_timesteps)) #[::-1]
+
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+        step_size = 1 / (float(self.num_timesteps))
+        for i in indices:
+            t = torch.tensor([i] * shape[0], device=device)
+            with torch.no_grad():
+                pred_eps = model(img, t, **model_kwargs)
+                out = {}
+                t_expanded = (t * step_size).reshape((shape[0], *[1]*(len(shape)-1)))
+                #print(t_expanded.shape, img.shape, pred_eps.shape)
+                out['pred_xstart'] = (img - pred_eps * (1-t_expanded)) / (t_expanded + 1e-6)
+                out['pred_xstart'] = out['pred_xstart'].clamp(-1, 1)
+                out["sample"] = img + (out['pred_xstart'] - pred_eps) * step_size
+                
+                # V prediction
+                # out['pred_xstart'] = v * (1 - t_expanded) + img
+                # out["sample"] = img + v * step_size
+                yield out
+                img = out["sample"]
+
+    def training_losses(self, model, x_start, encoder=None, sample_lst=None, model_kwargs=None, noise=None):
+        """
+        Compute training losses for a single timestep.
+
+        :param model: the model to evaluate loss on.
+        :param x_start: the [N x C x ...] tensor of inputs.
+        :param t: a batch of timestep indices.
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :param noise: if specified, the specific Gaussian noise to try to remove.
+        :return: a dict with the key "loss" containing a tensor of shape [N].
+                 Some mean or variance settings may also have other keys.
+        """
+        # x_start shape: [N, C, H, W]
+        # t: [N] integer indices
+        if model_kwargs is None:
+            model_kwargs = {}
+        if noise is None:
+            noise = torch.randn_like(x_start)
+        mollified_noise = self.mollifier(noise).to(device=x_start.device)
+
+        img_size = x_start.size(-1)
+        batch_size = x_start.shape[0]
+
+        t = torch.rand(batch_size).to(device=x_start.device)
+        t_expanded = t.reshape((batch_size, *[1,]*(len(x_start.shape)-1)))
+        x_t = t_expanded * self.mollifier(x_start) + (1 - t_expanded) * mollified_noise
+        t *= self.num_timesteps # the neural nets will apply time embedding
+        x_start_orig = x_start
+
+        terms = {"x_t": x_t, "noise": noise}
+
+        if sample_lst is not None:
+            model_kwargs["sample_lst"] = sample_lst
+            x_t = rearrange(x_t, 'b c h w -> b (h w) c')
+            x_t = torch.gather(x_t, 1, sample_lst.unsqueeze(2).repeat(1,1,x_t.size(2))).contiguous()
+            x_start = rearrange(x_start, 'b c h w -> b (h w) c')
+            x_start = torch.gather(x_start, 1, sample_lst.unsqueeze(2).repeat(1,1,x_start.size(2))).contiguous()
+            noise = rearrange(noise, 'b c h w -> b (h w) c')
+            noise = torch.gather(noise, 1, sample_lst.unsqueeze(2).repeat(1,1,noise.size(2))).contiguous()
+            if mollified_noise is not None:
+                mollified_noise = rearrange(mollified_noise, 'b c h w -> b (h w) c')
+                mollified_noise = torch.gather(mollified_noise, 1, sample_lst.unsqueeze(2).repeat(1,1,noise.size(2))).contiguous()
+
+        if encoder is not None:
+            sample_lst_fresh = torch.stack([torch.from_numpy(np.random.choice(x_start_orig.size(-1)**2, sample_lst.size(1), replace=False)) for _ in range(sample_lst.size(0))]).to(sample_lst.device)
+            x_start_orig = rearrange(x_start_orig, 'b c h w -> b (h w) c')
+            x_start_orig = torch.gather(x_start_orig, 1, sample_lst_fresh.unsqueeze(2).repeat(1,1,x_start_orig.size(2))).contiguous()
+            if self.stochastic_encoding:
+                encoding, mu, logvar = encoder(x_start_orig, sample_lst=sample_lst_fresh)
+                kld_loss = -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1)
+                terms["kld"] = kld_loss
+            else:
+                encoding = encoder(x_start_orig, sample_lst=sample_lst_fresh)
+            model_kwargs["z"] = encoding
+            terms["z"] = encoding
+        model_output = model(x_t, t, **model_kwargs)
+
+        target = {
+            ModelMeanType.PREVIOUS_X: None, # [TODO] consider what this should be in our rectified flow case
+            ModelMeanType.START_X: x_start,
+            ModelMeanType.EPSILON: noise,
+            ModelMeanType.V: x_start-mollified_noise, #noise - x_start,
+            ModelMeanType.MOLLIFIED_EPSILON: mollified_noise
+        }[self.model_mean_type]
+        assert model_output.shape == target.shape == x_start.shape
+            
+        if self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
+            terms["mse"] = mean_flat((target - model_output) ** 2)
+        else:
+            terms["mse"] = mean_flat(torch.abs(target - model_output))
+        
+        terms["loss"] = terms["mse"]
+        if self.model_mean_type == ModelMeanType.START_X:
+            terms["pred_xstart"] = model_output
+
+        return terms
+    
