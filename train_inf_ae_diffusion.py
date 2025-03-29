@@ -114,7 +114,7 @@ def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, sch
                             encoding = encoder(x[:H.train.sample_size])[0]
                         else:
                             encoding = encoder(x[:H.train.sample_size])
-                        samples, _ = diffusion.p_sample_loop(ema_model, (encoding.size(0), H.data.channels, H.data.img_size, H.data.img_size), progress=True, model_kwargs=dict(z=encoding), return_all=False)
+                        samples, _ = diffusion.ode_sample(ema_model, (encoding.size(0), H.data.channels, H.data.img_size, H.data.img_size), progress=True, model_kwargs=dict(z=encoding), return_all=False)
 
                 wandb_dict |= plot_images(H, samples, title='samples', vis=vis)
 
