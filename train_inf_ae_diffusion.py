@@ -236,7 +236,7 @@ def main(argv):
 
     if H.train.load_checkpoint: # and os.path.exists(checkpoint_path):
         os.makedirs(H.train.checkpoint_save_dir, exist_ok=True)
-        model_file = run.use_artifact(H.train.artifact_name).download(H.train.artifact_download_path)
+        model_file = run.use_artifact(H.train.artifact_name).download(H.train.artifact_download_dir)
         model_file = model_file + 'checkpoint.pkl'
         state_dict = torch.load(model_file, map_location=device)
         print(f"Loading Model from step {state_dict['global_step']}")
