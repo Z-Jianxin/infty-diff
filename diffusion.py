@@ -1672,7 +1672,7 @@ class RectifiedFlow(nn.Module):
         if return_all:
             return x_0, x_traj
         else:
-            return x_0
+            return x_0, x_0
 
     def training_losses(self, model, x_start, encoder=None, sample_lst=None, model_kwargs=None, noise=None, mollify_x=False):
         """
