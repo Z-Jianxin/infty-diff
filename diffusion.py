@@ -1640,31 +1640,26 @@ class RectifiedFlow(nn.Module):
         else:
             img = torch.randn(*shape, device=device)
             img = self.mollifier(img * noise_mul)
-        indices = list(range(self.num_timesteps))
 
         if model_kwargs is None:
             model_kwargs = {}
+        num_timesteps = self.num_timesteps
+        class ODEFunc(torch.nn.Module):
+            def forward(self, t, x):
+                t = torch.full((x.shape[0],), t.item(), device=device)
+                pred_eps = model(x, num_timesteps*t, **model_kwargs)
+                t_expanded = t.view(-1, *([1] * (x.ndim - 1)))
+                pred_xstart = (x - pred_eps * (1 - t_expanded)) / (t_expanded + 1e-6)
+                pred_xstart = pred_xstart.clamp(-1, 1) #if clip_denoised else pred_xstart
+                return pred_xstart - pred_eps
 
-        if progress:
-            # Lazy import so that we don't depend on tqdm.
-            from tqdm.auto import tqdm
-            indices = tqdm(indices)
-        
-        def ode_func(t, img):
-            t = torch.tensor([t] * shape[0], device=device)
-            pred_eps = model(img, t, **model_kwargs)
-            t_expanded = t.reshape((shape[0], *[1]*(len(shape)-1)))
-            #print(t_expanded.shape, img.shape, pred_eps.shape)
-            pred_xstart = (img - pred_eps * (1-t_expanded)) / (t_expanded + 1e-6)
-            pred_xstart = pred_xstart.clamp(-1, 1)
-            return pred_xstart - pred_eps
-        t_list = torch.linspace(0.0, 1.0, 10, device=device)
+        t_list = torch.linspace(0.0, 1.0, 100, device=device)
         with torch.no_grad():
             x_traj = odeint(
-                ode_func,
+                ODEFunc(),
                 img,
                 t_list,
-                method='rk4',
+                method='dopri5',
                 atol=1e-3,
                 rtol=1e-3,
             )
