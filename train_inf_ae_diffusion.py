@@ -58,7 +58,7 @@ def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, sch
                 raise Exception('Unknown Monte Carlo Integral type')
 
             with torch.cuda.amp.autocast(enabled=H.train.amp):
-                losses = diffusion.training_losses(model, x, sample_lst=sample_lst, encoder=encoder)
+                losses = diffusion.training_losses(model, x, sample_lst=sample_lst, encoder=encoder, mollify_x=H.diffusion.mollify_x)
                 if H.diffusion.weighted_loss:
                     if H.diffusion.multiscale_loss:
                         loss = (losses["multiscale_loss"] * weights).mean()
@@ -215,10 +215,11 @@ def main(argv):
 
     print(f"Number of parameters: {sum(p.numel() for p in model.parameters()) + sum(p.numel() for p in encoder.parameters())}")
 
-    if H.run.experiment != '':
-        checkpoint_path = f'checkpoints/{H.run.experiment}/'
-    else:
-        checkpoint_path = 'checkpoints/'
+    #if H.run.experiment != '':
+    #    checkpoint_path = f'checkpoints/{H.run.experiment}/'
+    #else:
+    #    checkpoint_path = 'checkpoints/'
+    checkpoint_path = H.train.checkpoint_save_dir
     os.makedirs(checkpoint_path, exist_ok=True)
     checkpoint_path = checkpoint_path + 'checkpoint.pkl'
     train_kwargs['checkpoint_path'] = checkpoint_path
@@ -233,8 +234,11 @@ def main(argv):
             betas=(H.optimizer.adam_beta1, H.optimizer.adam_beta2)
         )
 
-    if H.train.load_checkpoint and os.path.exists(checkpoint_path):
-        state_dict = torch.load(checkpoint_path, map_location=device)
+    if H.train.load_checkpoint: # and os.path.exists(checkpoint_path):
+        os.makedirs(H.train.checkpoint_save_dir, exist_ok=True)
+        model_file = run.use_artifact(H.train.artifact_name).download(H.train.artifact_download_path)
+        model_file = model_file + 'checkpoint.pkl'
+        state_dict = torch.load(model_file, map_location=device)
         print(f"Loading Model from step {state_dict['global_step']}")
         train_kwargs['global_step'] = state_dict['global_step']
         model.load_state_dict(state_dict['model_state_dict'], strict=False)

@@ -1617,7 +1617,7 @@ class RectifiedFlow(nn.Module):
                 yield out
                 img = out["sample"]
 
-    def training_losses(self, model, x_start, encoder=None, sample_lst=None, model_kwargs=None, noise=None):
+    def training_losses(self, model, x_start, encoder=None, sample_lst=None, model_kwargs=None, noise=None, mollify_x=False):
         """
         Compute training losses for a single timestep.
 
@@ -1643,7 +1643,10 @@ class RectifiedFlow(nn.Module):
 
         t = torch.rand(batch_size).to(device=x_start.device)
         t_expanded = t.reshape((batch_size, *[1,]*(len(x_start.shape)-1)))
-        x_t = t_expanded * self.mollifier(x_start) + (1 - t_expanded) * mollified_noise
+        if mollify_x:
+            x_t = t_expanded * self.mollifier(x_start) + (1 - t_expanded) * mollified_noise
+        else:
+            x_t = t_expanded * x_start + (1 - t_expanded) * mollified_noise
         t *= self.num_timesteps # the neural nets will apply time embedding
         x_start_orig = x_start
 

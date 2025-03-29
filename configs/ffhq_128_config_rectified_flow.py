@@ -19,9 +19,12 @@ def get_config():
     data.fid_samples = 50000
     
     config.train = train = ConfigDict()
-    train.load_checkpoint = False
+    train.artifact_name = "790000_8hx1ww2j:v0" # [NEW]
+    train.artifact_download_dir = "/nfs/turbo/coe-clayscot/jianxinz/wandb/temp/" # [NEW]
+    train.checkpoint_save_dir = "/nfs/turbo/coe-clayscot/jianxinz/infty-diff/checkpoints" #[NEW]
+    train.load_checkpoint = True # [MODIFIED]
     train.amp = True
-    train.batch_size = 8 # [MODIFIED]
+    train.batch_size = 16 # [MODIFIED]
     train.sample_size = 16
     train.plot_graph_steps = 100
     train.plot_samples_steps = 5000
@@ -62,6 +65,8 @@ def get_config():
     diffusion.multiscale_max_img_size = config.data.get_ref('img_size') // 2
     diffusion.mollifier_type = "dct"
     diffusion.weighted_loss = False
+
+    diffusion.mollify_x = False # [NEW]
 
     config.mc_integral = mc_integral = ConfigDict()
     mc_integral.type = 'uniform'

@@ -13,13 +13,16 @@ def get_config():
 
     config.data = data = ConfigDict()
     data.name = 'ffhq'
-    data.root_dir = '/nfs/turbo/coe-clayscot/jianxinz/datasets/FFHQ/256' # [MODIFIED]
+    data.root_dir = '/nfs/turbo/coe-clayscot/jianxinz/datasets/FFHQ/1024' # [MODIFIED]
     data.img_size = FieldReference(256)
     data.channels = 3
     data.fid_samples = 50000
     
     config.train = train = ConfigDict()
-    train.load_checkpoint = False
+    train.artifact_name = "none" # [NEW]
+    train.artifact_download_dir = "/nfs/turbo/coe-clayscot/jianxinz/wandb/temp/" + train.artifact_name # [NEW]
+    train.checkpoint_save_dir = "/nfs/turbo/coe-clayscot/jianxinz/infty-diff/checkpoints" #[NEW]
+    train.load_checkpoint = False # [MODIFIED]
     train.amp = True
     train.batch_size = 32
     train.sample_size = 8
@@ -61,6 +64,8 @@ def get_config():
     diffusion.multiscale_loss = False
     diffusion.multiscale_max_img_size = config.data.get_ref('img_size') // 2
     diffusion.mollifier_type = "dct"
+
+    diffusion.mollify_x = False # [NEW]
 
     config.mc_integral = mc_integral = ConfigDict()
     mc_integral.type = 'uniform'
