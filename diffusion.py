@@ -17,6 +17,7 @@ from einops import rearrange, repeat
 from pytorch3d.ops import knn_points, knn_gather
 import functools
 import torch_dct
+from torchdiffeq import odeint
 
 def mean_flat(x):
     return x.mean(dim=list(range(1, len(x.shape))))
