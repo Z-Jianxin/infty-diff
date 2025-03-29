@@ -15,6 +15,8 @@ from utils import get_data_loader, flatten_collection, optim_warmup, \
 import diffusion as gd
 from diffusion import GaussianDiffusion, get_named_beta_schedule, RectifiedFlow
 
+from wandb.sdk.artifacts.artifact_file_cache import get_artifact_file_cache
+
 # Commandline arguments
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", None, "Training configuration.", lock_config=True)
@@ -36,6 +38,9 @@ def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, sch
     mean_total_norm = 0
     skip = 0
     while True:
+        target_size = int(5e9) # Removes cache size to 10 GB
+        cache = get_artifact_file_cache()
+        cache.cleanup(target_size)
         for x in train_loader:
             if isinstance(x, tuple) or isinstance(x, list):
                 x = x[0]
