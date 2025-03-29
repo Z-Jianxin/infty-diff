@@ -1617,6 +1617,63 @@ class RectifiedFlow(nn.Module):
                 yield out
                 img = out["sample"]
 
+    def ode_sample(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+        return_all=False,
+        noise_mul=1.0
+    ):
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = torch.randn(*shape, device=device)
+            img = self.mollifier(img * noise_mul)
+        indices = list(range(self.num_timesteps))
+
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+            indices = tqdm(indices)
+        
+        def ode_func(t, img):
+            t = torch.tensor([t] * shape[0], device=device)
+            pred_eps = model(img, t, **model_kwargs)
+            t_expanded = t.reshape((shape[0], *[1]*(len(shape)-1)))
+            #print(t_expanded.shape, img.shape, pred_eps.shape)
+            pred_xstart = (img - pred_eps * (1-t_expanded)) / (t_expanded + 1e-6)
+            pred_xstart = pred_xstart.clamp(-1, 1)
+            return pred_xstart - pred_eps
+        t_list = torch.linspace(0.0, 1.0, 10, device=device)
+        with torch.no_grad():
+            x_traj = odeint(
+                ode_func,
+                img,
+                t_list,
+                method='rk4',
+                atol=1e-3,
+                rtol=1e-3,
+            )
+
+        x_0 = x_traj[-1]
+        if return_all:
+            return x_0, x_traj
+        else:
+            return x_0
+
     def training_losses(self, model, x_start, encoder=None, sample_lst=None, model_kwargs=None, noise=None, mollify_x=False):
         """
         Compute training losses for a single timestep.
