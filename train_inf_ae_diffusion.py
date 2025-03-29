@@ -38,7 +38,7 @@ def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, sch
     mean_total_norm = 0
     skip = 0
     while True:
-        target_size = int(5e9) # Removes cache size to 10 GB
+        target_size = int(10e9) # Removes cache size to 10 GB
         cache = get_artifact_file_cache()
         cache.cleanup(target_size)
         for x in train_loader:
@@ -55,9 +55,9 @@ def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, sch
             # t, weights = schedule_sampler.sample(x.size(0), device)
 
             if H.mc_integral.type == 'uniform':
-                sample_lst = torch.stack([torch.from_numpy(np.random.choice(H.data.img_size**2, H.mc_integral.q_sample, replace=False)) for _ in range(H.train.batch_size)]).to(device)
+                sample_lst = torch.stack([torch.from_numpy(np.random.choice(H.data.img_size**2, H.mc_integral.q_sample, replace=False)) for _ in range(x.size(0))]).to(device)
             elif H.mc_integral.type == 'halton':
-                sample_lst = torch.stack([torch.from_numpy((halton.random(H.mc_integral.q_sample) * H.data.img_size).astype(np.int64)) for _ in range(H.train.batch_size)]).to(device)
+                sample_lst = torch.stack([torch.from_numpy((halton.random(H.mc_integral.q_sample) * H.data.img_size).astype(np.int64)) for _ in range(x.size(0))]).to(device)
                 sample_lst = sample_lst[:,:,0] * H.data.img_size + sample_lst[:,:,1]
             else:
                 raise Exception('Unknown Monte Carlo Integral type')
@@ -66,10 +66,6 @@ def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, sch
                 losses = diffusion.training_losses(model, x, sample_lst=sample_lst, encoder=encoder, mollify_x=H.diffusion.mollify_x)
                 if H.diffusion.weighted_loss:
                     loss = (losses["loss"] * losses["weights"]).mean()
-                    # if H.diffusion.multiscale_loss:
-                    #    loss = (losses["multiscale_loss"] * weights).mean()
-                    #else:
-                    #    loss = (losses["loss"] * weights).mean()
                 else:
                     loss = losses["loss"].mean()
             
@@ -221,10 +217,6 @@ def main(argv):
 
     print(f"Number of parameters: {sum(p.numel() for p in model.parameters()) + sum(p.numel() for p in encoder.parameters())}")
 
-    #if H.run.experiment != '':
-    #    checkpoint_path = f'checkpoints/{H.run.experiment}/'
-    #else:
-    #    checkpoint_path = 'checkpoints/'
     checkpoint_path = H.train.checkpoint_save_dir
     os.makedirs(checkpoint_path, exist_ok=True)
     checkpoint_path = checkpoint_path + 'checkpoint.pkl'
@@ -240,7 +232,7 @@ def main(argv):
             betas=(H.optimizer.adam_beta1, H.optimizer.adam_beta2)
         )
 
-    if H.train.load_checkpoint: # and os.path.exists(checkpoint_path):
+    if H.train.load_checkpoint:
         os.makedirs(H.train.checkpoint_save_dir, exist_ok=True)
         model_file = run.use_artifact(H.train.artifact_name).download(H.train.artifact_download_dir)
         model_file = model_file + 'checkpoint.pkl'

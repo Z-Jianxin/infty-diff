@@ -33,6 +33,7 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = False
 device = torch.device('cuda')
 
+from wandb.sdk.artifacts.artifact_file_cache import get_artifact_file_cache
 
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "127.0.0.1"
@@ -152,19 +153,6 @@ def train(rank, world_size, H, train_loader, vis=None, checkpoint_path='', globa
         betas=(H.optimizer.adam_beta1, H.optimizer.adam_beta2)
     )
 
-    if H.train.load_checkpoint and os.path.exists(checkpoint_path):
-        state_dict = torch.load(checkpoint_path, map_location=device)
-        if rank == 0:
-            print(f"Loading Model from step {state_dict['global_step']}")
-        global_step = state_dict['global_step']
-        model.load_state_dict(state_dict['model_state_dict'], strict=True)
-        encoder.load_state_dict(state_dict['encoder_state_dict'], strict=True)
-        ema_model.load_state_dict(state_dict['model_ema_state_dict'], strict=True)
-        try:
-            optim.load_state_dict(state_dict['optimizer_state_dict'])
-        except ValueError:
-            print("Failed to load optim params.")
-
     # Model, optimizer, loss
     model = DDP(model, device_ids=[rank], find_unused_parameters=False)
     ema_model = DDP(ema_model, device_ids=[rank], find_unused_parameters=False)
@@ -174,6 +162,24 @@ def train(rank, world_size, H, train_loader, vis=None, checkpoint_path='', globa
     dataloader = DataLoader(train_loader.dataset, batch_size=H.train.batch_size, sampler=sampler, pin_memory=True)
     if rank == 0:
         run = wandb.init(project=H.run.name, config=flatten_collection(H), save_code=True, dir=H.run.wandb_dir, mode=H.run.wandb_mode)
+    if H.train.load_checkpoint:
+        if rank == 0:
+            os.makedirs(H.train.checkpoint_save_dir, exist_ok=True)
+            model_file = run.use_artifact(H.train.artifact_name).download(H.train.artifact_download_dir)
+            model_file = model_file + 'checkpoint.pkl'
+        else:
+            model_file = H.train.artifact_download_dir + 'checkpoint.pkl'
+        torch.distributed.barrier()
+        state_dict = torch.load(model_file, map_location=device)
+        print(f"Loading Model from step {state_dict['global_step']}")
+        global_step = state_dict['global_step']
+        model.load_state_dict(state_dict['model_state_dict'], strict=True)
+        encoder.load_state_dict(state_dict['encoder_state_dict'], strict=True)
+        ema_model.load_state_dict(state_dict['model_ema_state_dict'], strict=True)
+        try:
+            optim.load_state_dict(state_dict['optimizer_state_dict'])
+        except ValueError:
+            print("Failed to load optim params.")
     ################################################################
     # Multi-GPU training Setup Ends
     ################################################################
@@ -186,6 +192,10 @@ def train(rank, world_size, H, train_loader, vis=None, checkpoint_path='', globa
     mean_total_norm = 0
     skip = 0
     while True:
+        if rank == 0:
+            target_size = int(10e9) # Removes cache size to 10 GB
+            cache = get_artifact_file_cache()
+            cache.cleanup(target_size)
         for x in dataloader:
             if isinstance(x, tuple) or isinstance(x, list):
                 x = x[0]
@@ -201,19 +211,16 @@ def train(rank, world_size, H, train_loader, vis=None, checkpoint_path='', globa
             t, weights = schedule_sampler.sample(x.size(0), device)
 
             if H.mc_integral.type == 'uniform':
-                sample_lst = torch.stack([torch.from_numpy(np.random.choice(H.data.img_size**2, H.mc_integral.q_sample, replace=False)) for _ in range(H.train.batch_size)]).to(device)
+                sample_lst = torch.stack([torch.from_numpy(np.random.choice(H.data.img_size**2, H.mc_integral.q_sample, replace=False)) for _ in range(x.size(0))]).to(device)
             elif H.mc_integral.type == 'halton':
-                sample_lst = torch.stack([torch.from_numpy((halton.random(H.mc_integral.q_sample) * H.data.img_size).astype(np.int64)) for _ in range(H.train.batch_size)]).to(device)
+                sample_lst = torch.stack([torch.from_numpy((halton.random(H.mc_integral.q_sample) * H.data.img_size).astype(np.int64)) for _ in range(x.size(0))]).to(device)
                 sample_lst = sample_lst[:,:,0] * H.data.img_size + sample_lst[:,:,1]
             else:
                 raise Exception('Unknown Monte Carlo Integral type')
             with torch.cuda.amp.autocast(enabled=H.train.amp):
-                losses = diffusion.training_losses(model, x, t, sample_lst=sample_lst, encoder=encoder)
+                losses = diffusion.training_losses(model, x, sample_lst=sample_lst, encoder=encoder, mollify_x=H.diffusion.mollify_x)
                 if H.diffusion.weighted_loss:
-                    if H.diffusion.multiscale_loss:
-                        loss = (losses["multiscale_loss"] * weights).mean()
-                    else:
-                        loss = (losses["loss"] * weights).mean()
+                    loss = (losses["loss"] * losses["weights"]).mean()
                 else:
                     loss = losses["loss"].mean()
             
@@ -302,15 +309,8 @@ def main(argv):
 
     # wandb can be disabled by passing in --config.run.wandb_mode=disabled
     # run = wandb.init(project=H.run.name, config=flatten_collection(H), save_code=True, dir=H.run.wandb_dir, mode=H.run.wandb_mode)
-    
 
-
-    # print(f"Number of parameters: {sum(p.numel() for p in model.parameters()) + sum(p.numel() for p in encoder.parameters())}")
-
-    if H.run.experiment != '':
-        checkpoint_path = f'checkpoints/{H.run.experiment}/'
-    else:
-        checkpoint_path = 'checkpoints/'
+    checkpoint_path = H.train.checkpoint_save_dir
     os.makedirs(checkpoint_path, exist_ok=True)
     checkpoint_path = checkpoint_path + 'checkpoint.pkl'
     train_kwargs['checkpoint_path'] = checkpoint_path

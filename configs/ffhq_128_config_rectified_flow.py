@@ -21,7 +21,7 @@ def get_config():
     config.train = train = ConfigDict()
     train.artifact_name = "790000_8hx1ww2j:v0" # [NEW]
     train.artifact_download_dir = "/nfs/turbo/coe-clayscot/jianxinz/wandb/temp/" # [NEW]
-    train.checkpoint_save_dir = "/nfs/turbo/coe-clayscot/jianxinz/infty-diff/checkpoints" #[NEW]
+    train.checkpoint_save_dir = "/nfs/turbo/coe-clayscot/jianxinz/infty-diff/checkpoints/" #[NEW]
     train.load_checkpoint = True # [MODIFIED]
     train.amp = True
     train.batch_size = 16 # [MODIFIED]

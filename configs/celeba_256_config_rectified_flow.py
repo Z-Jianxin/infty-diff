@@ -6,29 +6,28 @@ def get_config():
 
     config.run = run = ConfigDict()
     run.name = 'infty_diff'
-    run.experiment = 'ffhq_mollified_256'
+    run.experiment = 'celeba_mollified_256'
     run.wandb_dir = '/nfs/turbo/coe-clayscot/jianxinz/wandb'
     run.wandb_mode = 'online'
     run.dry_run = False # [NEW] control if we do a one-epoch test
 
     config.data = data = ConfigDict()
-    data.name = 'ffhq'
-    data.root_dir = '/nfs/turbo/coe-clayscot/jianxinz/datasets/FFHQ/1024' # [MODIFIED]
+    data.name = 'celeba'
     data.img_size = FieldReference(256)
+    data.root_dir = '/nfs/turbo/coe-clayscot/jianxinz/datasets/celeba/256/celeba_hq_256' # [MODIFIED]
     data.channels = 3
     data.fid_samples = 50000
     
     config.train = train = ConfigDict()
-    train.artifact_name = "none" # [NEW]
     train.artifact_download_dir = "/nfs/turbo/coe-clayscot/jianxinz/wandb/temp/" # [NEW]
     train.checkpoint_save_dir = "/nfs/turbo/coe-clayscot/jianxinz/infty-diff/checkpoints/" #[NEW]
-    train.load_checkpoint = False # [MODIFIED]
+    train.load_checkpoint = False
     train.amp = True
-    train.batch_size = 32 # [MODIFIED]
+    train.batch_size = 16
     train.sample_size = 8
     train.plot_graph_steps = 100
     train.plot_samples_steps = 5000
-    train.checkpoint_steps = 5000
+    train.checkpoint_steps = 10000
     train.ema_update_every = 10
     train.ema_decay = 0.995
 
@@ -65,7 +64,6 @@ def get_config():
     diffusion.multiscale_max_img_size = config.data.get_ref('img_size') // 2
     diffusion.mollifier_type = "dct"
     diffusion.weighted_loss = False # [NEW]
-
     diffusion.mollify_x = True # [NEW]
 
     config.mc_integral = mc_integral = ConfigDict()

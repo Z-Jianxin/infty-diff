@@ -116,8 +116,8 @@ def get_data_loader(H, enumerate_data=False, override_img_size=None, flip_p=0.5,
         transform = transforms.Compose([transforms.Resize(img_size), transforms.ToTensor()])
         dataset = torchvision.datasets.MNIST('data', train=True, transform=transform, download=True)
     elif H.data.name == 'celeba':
-        dataset = ImageFolder(H.data.root_dir+f"{img_size}", split_file=H.data.root_dir+f"split.json", cache='bin', augment=True, flip_p=flip_p)
-        val_dataset = ImageFolder(H.data.root_dir+f"{img_size}", split_file=H.data.root_dir+f"split.json", cache='bin', split_key='val', augment=True, flip_p=flip_p)
+        dataset = ImageFolder(H.data.root_dir, cache='bin', augment=True, flip_p=flip_p)
+        val_dataset = ImageFolder(H.data.root_dir,  cache='bin', split_key='val', augment=True, flip_p=flip_p)
     elif H.data.name == 'churches':
         transform = transforms.Compose([
             transforms.CenterCrop(256), 
