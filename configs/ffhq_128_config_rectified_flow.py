@@ -64,7 +64,7 @@ def get_config():
     diffusion.multiscale_loss = False
     diffusion.multiscale_max_img_size = config.data.get_ref('img_size') // 2
     diffusion.mollifier_type = "dct"
-    diffusion.weighted_loss = False
+    diffusion.weighted_loss = False # [NEW]
 
     diffusion.mollify_x = False # [NEW]
 
