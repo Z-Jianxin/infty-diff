@@ -20,7 +20,6 @@ import torch_dct
 from torchdiffeq import odeint
 
 import numpy as np
-from scipy.stats import norm
 
 def mean_flat(x):
     return x.mean(dim=list(range(1, len(x.shape))))
@@ -1422,23 +1421,23 @@ class LogitNormalDistribution:
         self.mean = mean
         self.std = std
         self.eps = eps
+        self.normal = torch.distributions.Normal(loc=mean, scale=std)
 
-    def logit(self, x: np.ndarray) -> np.ndarray:
+    def logit(self, x: torch.Tensor) -> torch.Tensor:
         """Numerically stable logit function."""
-        x = np.clip(x, self.eps, 1 - self.eps)
-        return np.log(x) - np.log1p(-x)
+        x = torch.clamp(x, self.eps, 1 - self.eps)
+        return torch.log(x) - torch.log1p(-x)
 
-    def pdf(self, x: np.ndarray) -> np.ndarray:
+    def pdf(self, x: torch.Tensor) -> torch.Tensor:
         """Probability density function of the logit-normal distribution."""
         logit_x = self.logit(x)
-        logit_pdf = norm.pdf(logit_x, loc=self.mean, scale=self.std)
-        # Apply the change of variables formula: f(x) = g(h(x)) * |h'(x)|
+        logit_pdf = torch.exp(self.normal.log_prob(logit_x))
         logit_derivative = 1 / (x * (1 - x) + self.eps)
         return logit_pdf * logit_derivative
 
-    def batch_pdf(self, x: np.ndarray) -> np.ndarray:
+    def batch_pdf(self, x: torch.Tensor) -> torch.Tensor:
         """Evaluate the PDF for a batch of values."""
-        return np.array([self.pdf(val) for val in x])
+        return self.pdf(x)
 
 
 class RectifiedFlow(nn.Module):
