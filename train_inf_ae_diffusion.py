@@ -65,10 +65,11 @@ def train(run, H, model, ema_model, encoder, train_loader, optim, diffusion, sch
             with torch.cuda.amp.autocast(enabled=H.train.amp):
                 losses = diffusion.training_losses(model, x, sample_lst=sample_lst, encoder=encoder, mollify_x=H.diffusion.mollify_x)
                 if H.diffusion.weighted_loss:
-                    if H.diffusion.multiscale_loss:
-                        loss = (losses["multiscale_loss"] * weights).mean()
-                    else:
-                        loss = (losses["loss"] * weights).mean()
+                    loss = (losses["loss"] * losses["weights"]).mean()
+                    # if H.diffusion.multiscale_loss:
+                    #    loss = (losses["multiscale_loss"] * weights).mean()
+                    #else:
+                    #    loss = (losses["loss"] * weights).mean()
                 else:
                     loss = losses["loss"].mean()
             

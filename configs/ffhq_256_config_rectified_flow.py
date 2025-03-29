@@ -24,7 +24,7 @@ def get_config():
     train.checkpoint_save_dir = "/nfs/turbo/coe-clayscot/jianxinz/infty-diff/checkpoints" #[NEW]
     train.load_checkpoint = False # [MODIFIED]
     train.amp = True
-    train.batch_size = 64 # [MODIFIED]
+    train.batch_size = 32 # [MODIFIED]
     train.sample_size = 8
     train.plot_graph_steps = 100
     train.plot_samples_steps = 5000
@@ -64,9 +64,9 @@ def get_config():
     diffusion.multiscale_loss = False
     diffusion.multiscale_max_img_size = config.data.get_ref('img_size') // 2
     diffusion.mollifier_type = "dct"
-    diffusion.weighted_loss = False # [NEW]
+    diffusion.weighted_loss = True # [NEW]
 
-    diffusion.mollify_x = False # [NEW]
+    diffusion.mollify_x = True # [NEW]
 
     config.mc_integral = mc_integral = ConfigDict()
     mc_integral.type = 'uniform'

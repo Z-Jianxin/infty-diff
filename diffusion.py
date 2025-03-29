@@ -19,6 +19,9 @@ import functools
 import torch_dct
 from torchdiffeq import odeint
 
+import numpy as np
+from scipy.stats import norm
+
 def mean_flat(x):
     return x.mean(dim=list(range(1, len(x.shape))))
 
@@ -1413,6 +1416,31 @@ def space_timesteps(num_timesteps, section_counts):
         start_idx += size
     return set(all_steps)
 
+
+class LogitNormalDistribution:
+    def __init__(self, mean: float = 0.75, std: float = 1.0, eps: float = 1e-6):
+        self.mean = mean
+        self.std = std
+        self.eps = eps
+
+    def logit(self, x: np.ndarray) -> np.ndarray:
+        """Numerically stable logit function."""
+        x = np.clip(x, self.eps, 1 - self.eps)
+        return np.log(x) - np.log1p(-x)
+
+    def pdf(self, x: np.ndarray) -> np.ndarray:
+        """Probability density function of the logit-normal distribution."""
+        logit_x = self.logit(x)
+        logit_pdf = norm.pdf(logit_x, loc=self.mean, scale=self.std)
+        # Apply the change of variables formula: f(x) = g(h(x)) * |h'(x)|
+        logit_derivative = 1 / (x * (1 - x) + self.eps)
+        return logit_pdf * logit_derivative
+
+    def batch_pdf(self, x: np.ndarray) -> np.ndarray:
+        """Evaluate the PDF for a batch of values."""
+        return np.array([self.pdf(val) for val in x])
+
+
 class RectifiedFlow(nn.Module):
 
     def __init__(
@@ -1700,10 +1728,12 @@ class RectifiedFlow(nn.Module):
             x_t = t_expanded * self.mollifier(x_start) + (1 - t_expanded) * mollified_noise
         else:
             x_t = t_expanded * x_start + (1 - t_expanded) * mollified_noise
+        logit_normal = LogitNormalDistribution(mean=0.75, std=1.0)
+        weights = logit_normal.batch_pdf(t)
         t *= self.num_timesteps # the neural nets will apply time embedding
         x_start_orig = x_start
 
-        terms = {"x_t": x_t, "noise": noise}
+        terms = {"x_t": x_t, "noise": noise, "weights": weights}
 
         if sample_lst is not None:
             model_kwargs["sample_lst"] = sample_lst
